@@ -16,14 +16,12 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [videoUrl, setVideoUrl] = useState(null);
   const [recordedChunks, setRecordedChunks] = useState([]);
-  // NEW: State for camera devices
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
   // 1. Load Face-API Models & Get Devices
   useEffect(() => {
     const loadModelsAndGetDevices = async () => {
-      // Load models
       const MODEL_URL = '/models';
       await Promise.all([
         faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
@@ -31,44 +29,32 @@ export default function Home() {
       setIsModelsLoaded(true);
       console.log('Face-API models loaded successfully.');
 
-      // NEW: Get video devices
       try {
-        // First, get permission by asking for a generic video stream
-        // This is necessary for browsers to provide device labels
         const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        
-        // Now enumerate devices
         const devices = await navigator.mediaDevices.enumerateDevices();
         const availableVideoDevices = devices.filter(device => device.kind === 'videoinput');
         setVideoDevices(availableVideoDevices);
         
-        // Set the first available device as the default
         if (availableVideoDevices.length > 0) {
           setSelectedDeviceId(availableVideoDevices[0].deviceId);
         }
-
-        // Stop the temporary stream
         tempStream.getTracks().forEach(track => track.stop());
-
       } catch (err) {
         console.error("Error getting devices or initial permission:", err);
       }
     };
-
     loadModelsAndGetDevices();
   }, []);
 
-  // 2. Start/Switch Video Stream when a device is selected or models are loaded
+  // 2. Start/Switch Video Stream
   useEffect(() => {
     if (!isModelsLoaded || !selectedDeviceId) return;
 
     const startVideoStream = async () => {
-      // Stop any existing stream
       if (videoRef.current && videoRef.current.srcObject) {
         videoRef.current.srcObject.getTracks().forEach(track => track.stop());
       }
 
-      // Start new stream with selected device
       try {
         const constraints = {
           video: { 
@@ -86,27 +72,36 @@ export default function Home() {
         console.error('Error accessing webcam:', err);
       }
     };
-
     startVideoStream();
   }, [selectedDeviceId, isModelsLoaded]);
 
-
-  // 3. Main face detection and drawing loop
+  // 3. Main face detection and drawing loop (FIXED TO PREVENT BLINKING)
   const handleVideoPlay = () => {
+    if (videoRef.current && canvasRef.current) {
+        canvasRef.current.width = videoRef.current.videoWidth;
+        canvasRef.current.height = videoRef.current.videoHeight;
+    }
+      
     const detectFaces = async () => {
       if (videoRef.current && !videoRef.current.paused && !videoRef.current.ended && canvasRef.current) {
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        const displaySize = { width: video.width, height: video.height };
-        faceapi.matchDimensions(canvas, displaySize);
+        const displaySize = { width: video.videoWidth, height: video.videoHeight };
+        
+        if (canvas.width !== displaySize.width || canvas.height !== displaySize.height) {
+            canvas.width = displaySize.width;
+            canvas.height = displaySize.height;
+        }
 
+        faceapi.matchDimensions(canvas, displaySize);
         const detections = await faceapi.detectAllFaces(video, new faceapi.SsdMobilenetv1Options());
         const resizedDetections = faceapi.resizeResults(detections, displaySize);
-
         const ctx = canvas.getContext('2d');
+
         if (ctx) {
+          // Clear only the canvas, don't draw the video frame onto it
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          // Draw just the detections on the transparent canvas
           faceapi.draw.drawDetections(canvas, resizedDetections);
         }
       }
@@ -127,23 +122,18 @@ export default function Home() {
     };
   }, []);
 
-  // 4. Handle Video Recording
+  // 4. Handle Video Recording (FIXED TO RECORD THE SMOOTH VIDEO FEED)
   const handleStartRecording = () => {
-    if (canvasRef.current && videoRef.current.srcObject) {
-      const stream = canvasRef.current.captureStream(30);
-      const videoStream = videoRef.current.srcObject;
-      const audioTracks = videoStream.getAudioTracks();
-      if (audioTracks.length > 0) {
-        stream.addTrack(audioTracks[0]);
-      }
-
+    if (videoRef.current && videoRef.current.srcObject) {
+      // Record the clean stream directly from the video element
+      const stream = videoRef.current.srcObject;
+      
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm' });
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
           setRecordedChunks((prev) => [...prev, event.data]);
         }
       };
-
       mediaRecorderRef.current.start();
       setIsRecording(true);
       setVideoUrl(null);
@@ -173,7 +163,6 @@ export default function Home() {
       <h1 className="text-4xl font-bold mb-4">Face Tracking Recorder</h1>
       <p className="mb-2">{isModelsLoaded ? 'Ready to track! 🚀' : 'Loading models, please wait... ⏳'}</p>
 
-      {/* NEW: Camera Selection Dropdown */}
       <div className="mb-4 w-full max-w-xs">
         <label htmlFor="cameraSelect" className="block text-sm font-medium text-gray-300 mb-1">Select Camera</label>
         <select
@@ -191,17 +180,19 @@ export default function Home() {
         </select>
       </div>
       
-      <div className="relative w-full max-w-2xl mx-auto border-4 border-blue-500 rounded-lg overflow-hidden shadow-lg">
+      <div className="relative w-full max-w-2xl mx-auto aspect-video border-4 border-blue-500 rounded-lg overflow-hidden shadow-lg">
         <video
           ref={videoRef}
-          onPlay={handleVideoPlay}
+          onLoadedData={handleVideoPlay}
           autoPlay
           muted
-          width="640"
-          height="480"
-          className="absolute top-0 left-0"
+          playsInline
+          className="absolute top-0 left-0 w-full h-full object-cover"
         />
-        <canvas ref={canvasRef} width="640" height="480" className="w-full h-auto" />
+        <canvas
+          ref={canvasRef}
+          className="absolute top-0 left-0 w-full h-full"
+        />
       </div>
 
       <div className="mt-6 flex flex-col sm:flex-row items-center gap-4">
